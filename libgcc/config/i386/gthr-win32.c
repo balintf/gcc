@@ -29,6 +29,19 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+//#include <time.h>
+//#include <sys/time.h>
+//TODO: fixme, timeval should come from the headers
+
+struct timeval {
+	long tv_sec;
+	long tv_usec;
+};
+
+int __cdecl __attribute__ ((__nothrow__)) gettimeofday(struct timeval *__restrict__,
+			 void *__restrict__  /*	tzp (unused) */);
+
 #ifndef __GTHREAD_HIDE_WIN32API
 # define __GTHREAD_HIDE_WIN32API 1
 #endif
@@ -37,6 +50,14 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
 #define __GTHREAD_I486_INLINE_LOCK_PRIMITIVES
 #endif
 #include "gthr-win32.h"
+//#include <errno.h>
+#ifndef EINVAL
+#define	EINVAL	22
+#endif
+
+#ifndef ETIMEDOUT
+#define ETIMEDOUT	138
+#endif
 
 /* Windows32 threads specific definitions. The windows32 threading model
    does not map well into pthread-inspired gcc's threading model, and so 
@@ -68,7 +89,27 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
   
    The basic framework should work well enough. In the long term, GCC
    needs to use Structured Exception Handling on Windows32.  */
-
+   
+static int __gthr_win32_internal_abstime_to_relmillisec(const __gthread_time_t *abs_timeout) {
+	const long long SEC_TO_MS = 1000;
+	const long long NS_TO_MS = 1000000;
+	const long long US_TO_MS = 1000;
+	long long targetms = (long long)abs_timeout->tv_sec*SEC_TO_MS+((long long)abs_timeout->tv_nsec+NS_TO_MS/2)/NS_TO_MS;
+	struct timeval tv;
+	gettimeofday(&tv, 0);
+	long long currentms = (long long)tv.tv_sec*SEC_TO_MS+((long long)tv.tv_usec+US_TO_MS/2)/US_TO_MS;
+	DWORD milliseconds;
+	if(targetms > currentms) {
+		milliseconds = targetms - currentms;
+		if(milliseconds == INFINITE) {
+			--milliseconds;
+		}
+	} else {
+		milliseconds = 0;
+	}
+	return milliseconds;
+}
+   
 int
 __gthr_win32_once (__gthread_once_t *once, void (*func) (void))
 {
@@ -267,4 +308,195 @@ __gthr_win32_recursive_mutex_destroy (__gthread_recursive_mutex_t *mutex)
 {
   CloseHandle ((HANDLE) mutex->sema);
   return 0;
+}
+
+int __gthr_win32_create (__gthread_t *thread, void *(*func) (void*),
+				   void *args) {
+	//TODO: fix this
+	thread->thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)func, args, 0, &thread->tid);
+	return 0;
+}
+
+int __gthr_win32_join (__gthread_t thread, void **value_ptr) {
+	WaitForSingleObject((HANDLE)thread.thread, INFINITE);
+	DWORD exitcode=0;
+	GetExitCodeThread((HANDLE)thread.thread, &exitcode);
+  if(value_ptr)
+	  *value_ptr=(void*)exitcode;
+	CloseHandle((HANDLE)thread.thread);
+	return 0;
+}
+
+int __gthr_win32_detach (__gthread_t thread) {
+	CloseHandle((HANDLE)thread.thread);
+	return 0;
+}
+
+int __gthr_win32_equal (__gthread_t t1, __gthread_t t2) {
+	return t1.tid==t2.tid ? 1 : 0;
+}
+
+__gthread_t __gthr_win32_self (void) {
+	__gthread_t self;
+	self.thread = GetCurrentThread();
+	self.tid = GetCurrentThreadId();
+	return self;
+}
+
+int __gthr_win32_yield (void) {
+	Sleep(0);
+	return 0;
+}
+
+int __gthr_win32_mutex_timedlock (__gthread_mutex_t *mutex,
+							const __gthread_time_t *abs_timeout) {
+  if (InterlockedIncrement (&mutex->counter) == 0) {
+	  return 0;
+  } else {
+	  DWORD millisec;
+	  if(!abs_timeout)
+		  millisec = INFINITE;
+	  else {
+		  millisec = __gthr_win32_internal_abstime_to_relmillisec(abs_timeout);
+	  }
+	  DWORD waitresult = WaitForSingleObject ((HANDLE)mutex->sema, millisec);
+	  int res = EINVAL;
+	  if(waitresult == WAIT_OBJECT_0)
+		  return 0;
+	  else if(waitresult == WAIT_TIMEOUT)
+		  res = ETIMEDOUT;
+	  InterlockedDecrement (&mutex->counter);
+	  return res;
+  }
+}
+
+int __gthr_win32_recursive_mutex_timedlock (__gthread_recursive_mutex_t *mutex,
+								  const __gthread_time_t *abs_timeout) {
+  DWORD me = GetCurrentThreadId();
+  if (InterlockedIncrement (&mutex->counter) == 0)
+    {
+      mutex->depth = 1;
+      mutex->owner = me;
+    }
+  else if (mutex->owner == me)
+    {
+      InterlockedDecrement (&mutex->counter);
+      ++(mutex->depth);
+    }
+  else {
+	  DWORD millisec;
+	  if(!abs_timeout)
+		  millisec = INFINITE;
+	  else {
+		  millisec = __gthr_win32_internal_abstime_to_relmillisec(abs_timeout);
+	  }
+	  DWORD waitresult = WaitForSingleObject ((HANDLE)mutex->sema, millisec);
+	  int res = EINVAL;
+	  if(waitresult == WAIT_OBJECT_0) {
+		  mutex->depth = 1;
+		  mutex->owner = me;
+		  return 0;
+	  } else if(waitresult == WAIT_TIMEOUT) {
+		  res = ETIMEDOUT;
+	  }
+	  InterlockedDecrement (&mutex->counter);
+	  return res;
+  }
+  return 0;
+}
+
+void __gthread_win32_cond_init_function(__gthread_cond_t *cond) {
+	cond->numwaiters = 0;
+	cond->sema = CreateSemaphoreW(NULL, 0, 65535, NULL);
+	cond->waitevent = CreateEvent(NULL, FALSE, FALSE, NULL);
+	__gthr_win32_recursive_mutex_init_function(&cond->mutex);
+}
+
+int __gthread_win32_cond_destroy(__gthread_cond_t *cond) {
+	cond->numwaiters = 0;
+	CloseHandle((HANDLE)cond->sema);
+	CloseHandle((HANDLE)cond->waitevent);
+	return __gthr_win32_recursive_mutex_destroy(&cond->mutex);
+}
+
+int __gthread_win32_cond_broadcast (__gthread_cond_t *cond) {
+	__gthr_win32_recursive_mutex_lock(&cond->mutex);
+	if(cond->numwaiters<=0) {
+		__gthr_win32_recursive_mutex_unlock(&cond->mutex);
+		return 0;
+	}
+	ReleaseSemaphore((HANDLE)cond->sema, cond->numwaiters, NULL);
+	while(cond->numwaiters > 0) {
+		DWORD ret = WaitForSingleObject((HANDLE)cond->waitevent, 1000);
+		if(ret == WAIT_FAILED || ret == WAIT_ABANDONED) {
+			__gthr_win32_recursive_mutex_unlock(&cond->mutex);
+			return EINVAL;
+		}
+	}
+	while(WaitForSingleObject((HANDLE)cond->sema, 0) == WAIT_OBJECT_0);
+	__gthr_win32_recursive_mutex_unlock(&cond->mutex);
+	return 0;
+}
+
+int __gthr_win32_cond_signal (__gthread_cond_t *cond) {
+	__gthr_win32_recursive_mutex_lock(&cond->mutex);
+	int targetwaiters = cond->numwaiters-1;
+	if(targetwaiters <= -1) {
+		__gthr_win32_recursive_mutex_unlock(&cond->mutex);
+		return 0;
+	}
+	
+	ReleaseSemaphore((HANDLE)cond->sema, 1, NULL);
+	while(targetwaiters<cond->numwaiters) {
+		DWORD ret = WaitForSingleObject((HANDLE)cond->waitevent, 1000);
+		if(ret == WAIT_FAILED || ret == WAIT_ABANDONED) {
+			__gthr_win32_recursive_mutex_unlock(&cond->mutex);
+			return EINVAL;
+		}
+	}
+	__gthr_win32_recursive_mutex_unlock(&cond->mutex);
+	return 0;
+}
+
+int __gthread_win32_cond_wait (__gthread_cond_t *cond, __gthread_mutex_t *mutex) {
+	return __gthr_win32_cond_timedwait(cond, mutex, 0);
+}
+
+int __gthread_win32_cond_wait_recursive (__gthread_cond_t *cond,
+					__gthread_recursive_mutex_t *mutex) {
+	__gthr_win32_recursive_mutex_lock(&cond->mutex);
+	InterlockedIncrement(&cond->numwaiters);
+	__gthr_win32_recursive_mutex_unlock(&cond->mutex);
+	__gthr_win32_recursive_mutex_unlock(mutex);
+	DWORD ret = WaitForSingleObject((HANDLE)cond->sema, INFINITE);
+	InterlockedDecrement(&cond->numwaiters);
+	SetEvent((HANDLE)cond->waitevent);
+	__gthr_win32_recursive_mutex_lock(mutex);
+	if(ret == WAIT_TIMEOUT)
+		return ETIMEDOUT;
+	else
+		return 0;
+}
+
+int __gthr_win32_cond_timedwait (__gthread_cond_t *cond,
+						   __gthread_mutex_t *mutex,
+						   const __gthread_time_t *abs_timeout) {
+	DWORD millisec;
+	  if(!abs_timeout)
+		  millisec = INFINITE;
+	  else {
+		  millisec = __gthr_win32_internal_abstime_to_relmillisec(abs_timeout);
+	  }
+	__gthr_win32_recursive_mutex_lock(&cond->mutex);
+	InterlockedIncrement(&cond->numwaiters);
+	__gthr_win32_recursive_mutex_unlock(&cond->mutex);
+	__gthr_win32_mutex_unlock(mutex);
+	DWORD ret = WaitForSingleObject((HANDLE)cond->sema, millisec);
+	InterlockedDecrement(&cond->numwaiters);
+	SetEvent((HANDLE)cond->waitevent);
+	__gthr_win32_mutex_lock(mutex);
+	if(ret == WAIT_TIMEOUT)
+		return ETIMEDOUT;
+	else
+		return 0;
 }

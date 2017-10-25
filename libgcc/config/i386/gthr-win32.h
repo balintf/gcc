@@ -65,6 +65,8 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
    needs to use Structured Exception Handling on Windows32.  */
 
 #define __GTHREADS 1
+#define __GTHREADS_CXX0X 1
+#define __GTHREAD_HAS_COND	1
 
 #ifndef UNDER_CE
 #include <errno.h>
@@ -547,6 +549,168 @@ static inline int
 __gthread_recursive_mutex_destroy (__gthread_recursive_mutex_t *__mutex)
 {
   return __gthr_win32_recursive_mutex_destroy (__mutex);
+}
+
+typedef struct {
+	volatile long numwaiters;
+	void* sema;
+	__gthread_recursive_mutex_t mutex;
+	void* waitevent;
+	
+} __gthread_cond_t;
+
+#undef __GTHREAD_COND_INIT
+#define __GTHREAD_COND_INIT_FUNCTION __gthread_cond_init_function
+
+typedef struct {
+	void* thread;
+	unsigned long tid;
+} __gthread_t;
+
+struct timespec {
+	long tv_sec;
+	long tv_nsec;
+};
+
+typedef struct timespec __gthread_time_t;
+
+extern void __gthread_win32_cond_init_function(__gthread_cond_t *cond);
+extern int __gthread_win32_cond_destroy(__gthread_cond_t *cond);
+extern int __gthread_win32_cond_broadcast (__gthread_cond_t *cond);
+extern int __gthread_win32_cond_wait (__gthread_cond_t *cond, __gthread_mutex_t *mutex);
+extern int __gthread_win32_cond_wait_recursive (__gthread_cond_t *cond,
+					__gthread_recursive_mutex_t *mutex);
+extern int __gthr_win32_cond_signal (__gthread_cond_t *cond);
+extern int __gthr_win32_cond_timedwait (__gthread_cond_t *cond,
+						   __gthread_mutex_t *mutex,
+						   const __gthread_time_t *abs_timeout);					
+
+extern int __gthr_win32_create (__gthread_t *thread, void *(*func) (void*),
+				   void *args);
+extern int __gthr_win32_join (__gthread_t thread, void **value_ptr);
+extern int __gthr_win32_detach (__gthread_t thread);
+extern int __gthr_win32_equal (__gthread_t t1, __gthread_t t2);
+extern __gthread_t __gthr_win32_self (void);
+extern int __gthr_win32_yield (void);
+extern int __gthr_win32_mutex_timedlock (__gthread_mutex_t *m,
+							const __gthread_time_t *abs_timeout);
+extern int __gthr_win32_recursive_mutex_timedlock (__gthread_recursive_mutex_t *m,
+								  const __gthread_time_t *abs_timeout);
+
+
+static inline int __gthread_create (__gthread_t *thread, void *(*func) (void*),
+				   void *args) {
+	if (__gthread_active_p ())
+		return __gthr_win32_create(thread, func, args);
+	else
+		return 0;
+}
+
+static inline int __gthread_join (__gthread_t thread, void **value_ptr) {
+	if (__gthread_active_p ())
+		return __gthr_win32_join(thread, value_ptr);
+	else
+		return 0;
+}
+
+static inline int __gthread_detach (__gthread_t thread) {
+	if (__gthread_active_p ())
+		return __gthr_win32_detach(thread);
+	else
+		return 0;
+}
+
+static inline int __gthread_equal (__gthread_t t1, __gthread_t t2) {
+	if (__gthread_active_p ())
+		return __gthr_win32_equal(t1, t2);
+	else
+		return 0;
+}
+
+static inline __gthread_t __gthread_self (void) {
+	if (__gthread_active_p ())
+		return __gthr_win32_self();
+	else {
+		__gthread_t invalid;
+		invalid.thread = 0;
+		invalid.tid = 0;
+		return invalid;
+	}
+}
+
+static inline int __gthread_yield (void) {
+	if (__gthread_active_p ())
+		return __gthr_win32_yield();
+	else
+		return 0;
+}
+
+static inline int __gthread_mutex_timedlock (__gthread_mutex_t *m,
+							const __gthread_time_t *abs_timeout) {
+	if (__gthread_active_p ())
+		return __gthr_win32_mutex_timedlock(m, abs_timeout);
+	else
+		return 0;
+}
+
+static inline int __gthread_recursive_mutex_timedlock (__gthread_recursive_mutex_t *m,
+								  const __gthread_time_t *abs_timeout) {
+	if (__gthread_active_p ())
+		return __gthr_win32_recursive_mutex_timedlock(m, abs_timeout);
+	else
+		return 0;
+}
+
+static inline void __gthread_cond_init_function(__gthread_cond_t *cond) {
+	if (__gthread_active_p ())
+		__gthread_win32_cond_init_function(cond);
+}
+
+static inline int
+__gthread_cond_destroy(__gthread_cond_t *cond)
+{
+	if (__gthread_active_p ())
+		return __gthread_win32_cond_destroy(cond);
+	else
+		return 0;
+}
+
+static inline int __gthread_cond_broadcast (__gthread_cond_t *cond) {
+	if (__gthread_active_p ())
+		return __gthread_win32_cond_broadcast(cond);
+	else
+		return 0;
+}
+
+static inline int __gthread_cond_wait (__gthread_cond_t *cond, __gthread_mutex_t *mutex) {
+	if (__gthread_active_p ())
+		return __gthread_win32_cond_wait(cond, mutex);
+	else
+		return 0;	
+}
+
+static inline int __gthread_cond_wait_recursive (__gthread_cond_t *cond,
+					__gthread_recursive_mutex_t *mutex) {
+	if (__gthread_active_p ())
+		return __gthread_win32_cond_wait_recursive(cond, mutex);
+	else
+		return 0;						
+}
+
+static inline int __gthread_cond_signal (__gthread_cond_t *cond) {
+	if (__gthread_active_p ())
+		return __gthr_win32_cond_signal(cond);
+	else
+		return 0;
+}
+
+static inline int __gthread_cond_timedwait (__gthread_cond_t *cond,
+						   __gthread_mutex_t *mutex,
+						   const __gthread_time_t *abs_timeout) {
+	if (__gthread_active_p ())
+		return __gthr_win32_cond_timedwait(cond, mutex, abs_timeout);
+	else
+		return 0;
 }
 
 #else /* ! __GTHREAD_HIDE_WIN32API */

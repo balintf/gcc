@@ -275,7 +275,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     // can't safely use __gthread_equal on default-constructed values (nor
     // the non-zero value returned by this_thread::get_id() for
     // single-threaded programs using GNU libc). Assume EqualityComparable.
-    return __x._M_thread == __y._M_thread;
+	// TODO: fixme
+    return __gthread_equal(__x._M_thread, __y._M_thread);
   }
 
   inline bool
@@ -287,7 +288,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
   {
     // Pthreads doesn't define any way to do this, so we just have to
     // assume native_handle_type is LessThanComparable.
-    return __x._M_thread < __y._M_thread;
+    return __x._M_thread.tid < __y._M_thread.tid;
   }
 
   inline bool
